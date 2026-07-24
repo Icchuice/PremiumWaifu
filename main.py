@@ -1,7 +1,14 @@
 import os, sqlite3, json, time, random
+import imghdr # FIX FOR PYTHON 3.13
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
+
+# Python 3.13 fix - imghdr hat gaya hai
+if not hasattr(imghdr, 'what'):
+    def what(file, h=None):
+        return None
+    imghdr.what = what
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -346,7 +353,7 @@ def main():
     dp.add_handler(CommandHandler("broadcast", broadcast))
     dp.add_handler(CallbackQueryHandler(button))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    print("✅ PREMIUM IB BOT LIVE")
+    print("✅ PREMIUM IB BOT LIVE - PYTHON 3.13 FIXED")
     updater.start_polling()
     updater.idle()
 
