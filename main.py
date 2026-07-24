@@ -1,11 +1,14 @@
 import os, sqlite3, json, time, random
-import imghdr # FIX FOR PYTHON 3.13
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
 
-# Python 3.13 fix - imghdr hat gaya hai
-if not hasattr(imghdr, 'what'):
+# PYTHON 3.13 FIX - imghdr nahi hai to khud bana do
+try:
+    import imghdr
+except ModuleNotFoundError:
+    import types
+    imghdr = types.ModuleType('imghdr')
     def what(file, h=None):
         return None
     imghdr.what = what
