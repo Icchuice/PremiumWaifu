@@ -1,4 +1,1 @@
-python-telegram-bot==12.8
-python-dotenv
-urllib3==1.26.18
-six
+python-telegram-bot==20.7
