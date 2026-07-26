@@ -225,16 +225,34 @@ async def givecoin(update: Update, context: CallbackContext):
     await update.message.reply_text("Coins given")
 
 async def addbal(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID: return
-    if len(context.args)!=2: await update.message.reply_text("Format: /addbal <user_id> <amount>"); return
-    uid = int(context.args[0]); amt = float(context.args[1])
-    add_balance(uid, amt); new_bal = get_balance(uid)
-    photo = get_setting("qr_photo")
-    caption = "PAY HERE & SEND SCREENSHOT TO ADMIN @OWNERSWEEN & WAIT 3 MIN"
-    if photo: await context.bot.send_photo(update.effective_chat.id, photo, caption=caption)
-    else: await update.message.reply_text("Pehle /setqr se QR photo set karo")
-    await update.message.reply_text(f"Added {amt} coins to <a href='tg://user?id={uid}'>User</a>\nNew Balance: {new_bal}", parse_mode='HTML')
+    uid = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text("Format: /addbal <amount>\nExample: /addbal 500");
+        return
+    try:
+        amt = float(context.args[0])
+        if amt <= 0:
+            await update.message.reply_text("Amount 0 se bada hona chahiye");
+            return
+    except:
+        await update.message.reply_text("Sahi amount likho: /addbal 500");
+        return
 
+    photo = get_setting("qr_photo")
+    link = get_setting("qr")
+
+    # POV Button banaya
+    keyboard = [[InlineKeyboardButton("📤 POV - Send Screenshot", url="https://t.me/OwnerSween")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    caption = f"**PAYMENT HERE & SEND SCREENSHOT USING POV BUTTON**\n\nAmount: {int(amt)} coins\nAfter payment click POV button and send screenshot to @OwnerSween"
+
+    if photo:
+        await context.bot.send_photo(update.effective_chat.id, photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
+    elif link:
+        await update.message.reply_text(f"{caption}\n\nQR Link: {link}", reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("Pehle admin se QR set karwao. /qr check karo")
 async def created(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
     if len(context.args)!=3: await update.message.reply_text("Format: /created amount code max_uses"); return
@@ -287,13 +305,13 @@ def main():
     app.add_handler(CommandHandler("clutch", clutch)); app.add_handler(CommandHandler("hunt", hunt))
     app.add_handler(CommandHandler("search", search)); app.add_handler(CommandHandler("shop", shop))
     app.add_handler(CommandHandler("harem", harem)); app.add_handler(CommandHandler("bcards", bcards))
+        app.add_handler(CommandHandler("addbal", addbal)); app.add_handler(CommandHandler("created", created))
     app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("qr", qr))
     app.add_handler(CommandHandler("redeem", redeem)); app.add_handler(CommandHandler("battle", battle))
     app.add_handler(CommandHandler("pick", pick))
     # ADMIN 12
     app.add_handler(CommandHandler("upload", upload)); app.add_handler(CommandHandler("delete", delete))
     app.add_handler(CommandHandler("give", give)); app.add_handler(CommandHandler("givecoin", givecoin))
-    app.add_handler(CommandHandler("addbal", addbal)); app.add_handler(CommandHandler("created", created))
     app.add_handler(CommandHandler("stime", stime)); app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("setqr", setqr)); app.add_handler(CommandHandler("setpic", setpic))
     app.add_handler(CommandHandler("rwaifu", rwaifu)); app.add_handler(CommandHandler("setcaption", setcaption))
