@@ -276,7 +276,7 @@ async def message_counter(update: Update, context: CallbackContext):
             keyboard = [[InlineKeyboardButton("CLUTCH", switch_inline_query_current_chat=switch_query)]]
             await context.bot.send_photo(update.effective_chat.id, w[6], caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def main():
+def main():
     if not TOKEN or not ADMIN_ID:
         print("BOT_TOKEN or ADMIN_ID missing in env")
         return
@@ -312,7 +312,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(joinbattle, pattern="joinbattle"))
 
     print("CLUTCH WAIFU BOT RUNNING")
-    await app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__=='__main__':
-    asyncio.run(main())
+    main()
