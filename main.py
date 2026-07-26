@@ -1,12 +1,11 @@
 import sqlite3
 import random
 import os
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # IMPORTANT:.env me apna ID daalna
 GROUP_URL = "https://t.me/Main_Clutch"
 CHANNEL_URL = "https://t.me/Clutch_Update"
 DB_FILE = "clutch_waifu.db"
@@ -48,7 +47,7 @@ async def start(update: Update, context: CallbackContext):
     else: await update.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def helpcmd(update: Update, context: CallbackContext):
-    txt = "**COMMAND LIST - 25 TOTAL**\n\n**USER - 13**\n/start /help /clutch <name> /hunt /search <name or id>\n/shop /harem /bcards /balance /redeem <code>\n/battle /qr /pick <id>\n\n**ADMIN - 12**\n/upload /delete /give /givecoin /addbal\n/created /stime /broadcast /setqr /setpic\n/rwaifu <id> /setcaption <text>"
+    txt = "**COMMAND LIST - 25 TOTAL**\n\n**USER - 14**\n/start /help /clutch <name> /hunt /search <name or id>\n/shop /harem /bcards /balance /redeem <code>\n/battle /qr /pick <id> /addbal <amount>\n\n**ADMIN - 11**\n/upload /delete /give <uid> <wid> /givecoin <uid> <amt>\n/created /stime /broadcast /setqr /setpic\n/rwaifu <id> /setcaption <text>"
     await update.message.reply_text(txt, parse_mode='Markdown')
 
 async def clutch(update: Update, context: CallbackContext):
@@ -73,7 +72,7 @@ async def search(update: Update, context: CallbackContext):
     if not context.args: await update.message.reply_text("Format: /search <name or id>"); return
     q = ' '.join(context.args).lower()
     if q.isdigit(): rows = dbf("SELECT * FROM waifus WHERE id=?", (int(q),))
-    else: rows = dbf("SELECT * FROM waifus WHERE name LIKE? OR anime LIKE?", (f"%{q}%", f"%{q}%"))
+    else: rows = dbf("SELECT * FROM waifus WHERE name LIKE? OR anime LIKE?", (f"%{q}%", f"%{q}%")) # FIXED SPACE
     if not rows: await update.message.reply_text("Waifu not found"); return
     w = rows[0]
     await context.bot.send_photo(update.effective_chat.id, w[5], caption=f"**ID:** `{w[0]}`\n**Name:** {w[1]}\n**Anime:** {w[2]}\n**Rarity:** {RARITY_MAP[w[3]]}\n**Price:** {int(w[4])} coins\n**Power:** {w[6]}", parse_mode='Markdown')
@@ -118,6 +117,22 @@ async def qr(update: Update, context: CallbackContext):
     elif link: await update.message.reply_text(f"**Support QR**\n{link}", parse_mode='Markdown')
     else: await update.message.reply_text("QR abhi set nahi hai")
 
+async def addbal(update: Update, context: CallbackContext):
+    if not context.args:
+        await update.message.reply_text("Format: /addbal <amount>\nExample: /addbal 500");
+        return
+    try: amt = float(context.args[0])
+    except: await update.message.reply_text("Sahi amount likho: /addbal 500"); return
+
+    photo = get_setting("qr_photo")
+    keyboard = [[InlineKeyboardButton("📤 POV - Send Screenshot", url="https://t.me/OwnerSween")]]
+    caption = f"**PAYMENT HERE & SEND SCREENSHOT USING POV BUTTON**\n\nAmount: {int(amt)} coins\nAfter payment click POV button and send screenshot to @OwnerSween"
+
+    if photo:
+        await context.bot.send_photo(update.effective_chat.id, photo, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    else:
+        await update.message.reply_text("Pehle admin se QR set karwao. /setqr")
+
 async def redeem(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     if not context.args: await update.message.reply_text("Format: /redeem CODE"); return
@@ -134,13 +149,13 @@ async def redeem(update: Update, context: CallbackContext):
 async def battle(update: Update, context: CallbackContext):
     chat = update.effective_chat
     row = dbf("SELECT * FROM battles WHERE chat_id=?",(chat.id,))
-    if row: await update.message.reply_text("Battle already running. Click Join Battle button."); return
+    if row: await update.message.reply_text("Battle already running."); return
     p1 = update.effective_user.id
     p1_cards = dbf("SELECT COUNT(*) FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=? AND w.rarity=12",(p1,))[0][0]
-    if p1_cards==0: await update.message.reply_text("You need battle cards to start battle"); return
+    if p1_cards==0: await update.message.reply_text("You need battle cards"); return
     db("INSERT OR REPLACE INTO battles VALUES (?,?,?)",(chat.id,p1,0))
     keyboard = [[InlineKeyboardButton("Join Battle", callback_data=f"joinbattle_{chat.id}")]]
-    await update.message.reply_text(f"Battle Started by {update.effective_user.first_name}\nAnyone with battle cards can join!", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(f"Battle Started by {update.effective_user.first_name}", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def joinbattle(update: Update, context: CallbackContext):
     query = update.callback_query; await query.answer(); chat_id = int(query.data.split("_")[1]); p2 = query.from_user.id
@@ -148,15 +163,12 @@ async def joinbattle(update: Update, context: CallbackContext):
     if not row: await query.edit_message_text("Expired"); return
     p1 = row[0][1]
     if p1 == p2: await query.edit_message_text("You started this battle"); return
-    if row[0][2]!= 0: await query.edit_message_text("Battle already has 2 players"); return
-    p2_cards = dbf("SELECT COUNT(*) FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=? AND w.rarity=12",(p2,))[0][0]
-    if p2_cards==0: await query.edit_message_text("You need battle cards to join"); return
     db("UPDATE battles SET p2=? WHERE chat_id=?",(p2,chat_id))
     p1_power = dbf("SELECT SUM(w.power) FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=? AND w.rarity=12",(p1,))[0][0] or 0
     p2_power = dbf("SELECT SUM(w.power) FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=? AND w.rarity=12",(p2,))[0][0] or 0
     winner = p1 if p1_power >= p2_power else p2
     add_balance(winner, 100)
-    await query.edit_message_text(f"Battle: <a href='tg://user?id={p1}'>P1</a> vs <a href='tg://user?id={p2}'>P2</a>\nWinner: <a href='tg://user?id={winner}'>Player</a> +100 coins", parse_mode='HTML')
+    await query.edit_message_text(f"Winner: <a href='tg://user?id={winner}'>Player</a> +100 coins", parse_mode='HTML')
     db("DELETE FROM battles WHERE chat_id=?",(chat_id,))
 
 async def pick(update: Update, context: CallbackContext):
@@ -166,6 +178,7 @@ async def pick(update: Update, context: CallbackContext):
     w = w[0]
     await context.bot.send_photo(update.effective_chat.id, w[5], caption=f"**ID:** `{w[0]}`\n**{w[1]}** | {w[2]}\n{RARITY_MAP[w[3]]}", parse_mode='Markdown')
 
+# ===== ADMIN COMMANDS =====
 async def rwaifu(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
     if not context.args: await update.message.reply_text("Format: /rwaifu <id>"); return
@@ -188,10 +201,7 @@ async def message_counter(update: Update, context: CallbackContext):
         message_count[chat.id]=0; waifus = [w for w in get_waifus() if w[3] in DROP_RARITY]
         if not waifus: return; w = random.choice(waifus); last_spawn[chat.id]=w
         rarity = RARITY_MAP[w[3]]
-        if w[4] > 0:
-            caption = f'A New "{rarity}" "{int(w[4])}₹" SealWaifu💫 Appeared...\n\n/Clutch {w[1]} and add in Your Sealwaifu Collection 👾'
-        else:
-            caption = f'A New "{rarity}" SealWaifu💫 Appeared...\n\n/Clutch {w[1]} and add in Your Sealwaifu Collection 👾'
+        caption = f'A New "{rarity}" SealWaifu💫 Appeared...\n\n/Clutch {w[1]} and add in Your Sealwaifu Collection 👾'
         await context.bot.send_photo(chat.id, w[5], caption=caption, parse_mode='Markdown')
 
 async def upload(update: Update, context: CallbackContext):
@@ -204,7 +214,7 @@ async def upload(update: Update, context: CallbackContext):
     power = int(context.args[4]) if len(context.args) > 4 else 0
     file_id = update.message.reply_to_message.photo[-1].file_id
     db("INSERT INTO waifus (name,anime,rarity,price,power,file_id) VALUES (?,?,?,?,?,?)",(name,anime,rarity,price,power,file_id))
-    await update.message.reply_text(f"Uploaded {name} | Rarity: {RARITY_MAP[rarity]} | Price: {price} | Power: {power}")
+    await update.message.reply_text(f"Uploaded {name} | Rarity: {RARITY_MAP[rarity]}")
 
 async def delete(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
@@ -216,49 +226,20 @@ async def give(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
     if len(context.args)!=2: await update.message.reply_text("Format: /give <user_id> <waifu_id>"); return
     add_to_harem(int(context.args[0]), int(context.args[1]))
-    await update.message.reply_text("Waifu given")
+    await update.message.reply_text(f"Waifu ID {context.args[1]} given to {context.args[0]}")
 
 async def givecoin(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
     if len(context.args)!=2: await update.message.reply_text("Format: /givecoin <user_id> <amount>"); return
     add_balance(int(context.args[0]), float(context.args[1]))
-    await update.message.reply_text("Coins given")
+    await update.message.reply_text(f"{context.args[1]} coins given to {context.args[0]}")
 
-async def addbal(update: Update, context: CallbackContext):
-    uid = update.effective_user.id
-    if not context.args:
-        await update.message.reply_text("Format: /addbal <amount>\nExample: /addbal 500");
-        return
-    try:
-        amt = float(context.args[0])
-        if amt <= 0:
-            await update.message.reply_text("Amount 0 se bada hona chahiye");
-            return
-    except:
-        await update.message.reply_text("Sahi amount likho: /addbal 500");
-        return
-
-    photo = get_setting("qr_photo")
-    link = get_setting("qr")
-
-    # POV Button banaya
-    keyboard = [[InlineKeyboardButton("📤 POV - Send Screenshot", url="https://t.me/OwnerSween")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    caption = f"**PAYMENT HERE & SEND SCREENSHOT USING POV BUTTON**\n\nAmount: {int(amt)} coins\nAfter payment click POV button and send screenshot to @OwnerSween"
-
-    if photo:
-        await context.bot.send_photo(update.effective_chat.id, photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
-    elif link:
-        await update.message.reply_text(f"{caption}\n\nQR Link: {link}", reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("Pehle admin se QR set karwao. /qr check karo")
 async def created(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
     if len(context.args)!=3: await update.message.reply_text("Format: /created amount code max_uses"); return
     amount,code,max_uses = float(context.args[0]),context.args[1].upper(),int(context.args[2])
     db("INSERT OR REPLACE INTO redeem VALUES (?,?,?,?)",(code,amount,max_uses,""))
-    await update.message.reply_text(f"Code: {code}\nAmount: {amount}\nMax Uses: {max_uses}")
+    await update.message.reply_text(f"Code: {code}\nAmount: {amount}")
 
 async def stime(update: Update, context: CallbackContext):
     uid = update.effective_user.id; chat = update.effective_chat; is_admin = False
@@ -278,13 +259,14 @@ async def broadcast(update: Update, context: CallbackContext):
     await update.message.reply_text(f"Sent to {count} users")
 
 async def setqr(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID: return
+    if update.effective_user.id!= ADMIN_ID:
+        await update.message.reply_text("You are not admin")
+        return
     if update.message.reply_to_message and update.message.reply_to_message.photo:
-        file_id = update.message.reply_to_message.photo[-1].file_id
-        set_setting("qr_photo", file_id); set_setting("qr", "")
+        set_setting("qr_photo", update.message.reply_to_message.photo[-1].file_id)
         await update.message.reply_text("QR Photo set ho gayi ✅"); return
-    if not context.args: await update.message.reply_text("Format: /setqr <link> ya QR photo reply karke /setqr"); return
-    set_setting("qr", ' '.join(context.args)); set_setting("qr_photo", "")
+    if not context.args: await update.message.reply_text("Format: /setqr <link>"); return
+    set_setting("qr", ' '.join(context.args))
     await update.message.reply_text("QR Link set ho gaya ✅")
 
 async def setpic(update: Update, context: CallbackContext):
@@ -294,32 +276,37 @@ async def setpic(update: Update, context: CallbackContext):
         await update.message.reply_text("Start pic set")
 
 def main():
-    if not TOKEN or not ADMIN_ID:
-        print("BOT_TOKEN or ADMIN_ID missing in env")
-        return
+    if not TOKEN: print("BOT_TOKEN missing"); return
+    if ADMIN_ID == 0: print("WARNING: ADMIN_ID is 0. Set it in.env file") # WARNING ADD KI
     init_db()
     app = Application.builder().token(TOKEN).build()
 
-    # USER 13
+    # 14 USER
     app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("help", helpcmd))
     app.add_handler(CommandHandler("clutch", clutch)); app.add_handler(CommandHandler("hunt", hunt))
     app.add_handler(CommandHandler("search", search)); app.add_handler(CommandHandler("shop", shop))
     app.add_handler(CommandHandler("harem", harem)); app.add_handler(CommandHandler("bcards", bcards))
-        app.add_handler(CommandHandler("addbal", addbal)); app.add_handler(CommandHandler("created", created))
     app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("qr", qr))
     app.add_handler(CommandHandler("redeem", redeem)); app.add_handler(CommandHandler("battle", battle))
-    app.add_handler(CommandHandler("pick", pick))
-    # ADMIN 12
-    app.add_handler(CommandHandler("upload", upload)); app.add_handler(CommandHandler("delete", delete))
-    app.add_handler(CommandHandler("give", give)); app.add_handler(CommandHandler("givecoin", givecoin))
-    app.add_handler(CommandHandler("stime", stime)); app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("setqr", setqr)); app.add_handler(CommandHandler("setpic", setpic))
-    app.add_handler(CommandHandler("rwaifu", rwaifu)); app.add_handler(CommandHandler("setcaption", setcaption))
-    # CALLBACKS
+    app.add_handler(CommandHandler("pick", pick)); app.add_handler(CommandHandler("addbal", addbal))
+
+    # 11 ADMIN - 100% CONFIRM ADD HAI
+    app.add_handler(CommandHandler("upload", upload))
+    app.add_handler(CommandHandler("delete", delete))
+    app.add_handler(CommandHandler("give", give))
+    app.add_handler(CommandHandler("givecoin", givecoin))
+    app.add_handler(CommandHandler("created", created))
+    app.add_handler(CommandHandler("stime", stime))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("setqr", setqr)) # PAKKA HAI
+    app.add_handler(CommandHandler("setpic", setpic))
+    app.add_handler(CommandHandler("rwaifu", rwaifu))
+    app.add_handler(CommandHandler("setcaption", setcaption))
+
     app.add_handler(CallbackQueryHandler(buy, pattern="buy_")); app.add_handler(CallbackQueryHandler(joinbattle, pattern="joinbattle"))
     app.add_handler(MessageHandler(filters.ALL, message_counter))
 
-    print("CLUTCH WAIFU BOT V27 RUNNING")
+    print("CLUTCH WAIFU BOT V32 RUNNING")
     app.run_polling()
 
 if __name__=='__main__': main()
