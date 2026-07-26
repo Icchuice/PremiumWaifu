@@ -1,256 +1,318 @@
-import os, sqlite3, types
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
+import asyncio
+import sqlite3
+import random
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, filters
 
-# PYTHON 3.13 FIX
-try: import imghdr
-except ModuleNotFoundError: imghdr = types.ModuleType('imghdr'); imghdr.what = lambda f,h=None: None
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+GROUP_URL = "https://t.me/Main_Clutch"
+CHANNEL_URL = "https://t.me/Clutch_Update"
+DB_FILE = "clutch_waifu.db"
 
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-GROUP_LINK = "https://t.me/Main_Clutch"
-OWNER_LINK = "https://t.me/OwnerSween"
-DB_FILE = "database.db"
+RARITY_MAP = {
+    0: "🍷 Luxurious", 1: "🌟 God Summon", 2: "🎀 Only Shop", 3: "🔮 Limited", 4: "💎 Premium",
+    5: "🎐 Special", 6: "💮 Exclusive", 7: "🪽 Celestial", 8: "🟡 Legendary", 9: "🟠 Rare",
+    10: "🔵 Medium", 11: "🟢 Common", 12: "💀 Battle"
+}
+DROP_RARITY = [4,5,6,7,8,9,10,11,12]
 
-MSG_COUNT = {}
+active_battles = {}
+
+def db(q,p=()):
+    conn=sqlite3.connect(DB_FILE);c=conn.cursor();c.execute(q,p);conn.commit();conn.close()
+def dbf(q,p=()):
+    conn=sqlite3.connect(DB_FILE);c=conn.cursor();c.execute(q,p);r=c.fetchall();conn.close();return r
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, cash INTEGER DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS waifus (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, anime TEXT, rarity INTEGER, img_url TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS user_waifus (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, waifu_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS shop (id INTEGER PRIMARY KEY, waifu_id INTEGER, price INTEGER, qty INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, amount INTEGER, used_by TEXT DEFAULT '')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, qr_file_id TEXT, caption TEXT, photo_file_id TEXT, video_file_id TEXT, spawn_time INTEGER)''')
-    c.execute("INSERT OR IGNORE INTO config (id, caption, spawn_time) VALUES (1, 'Welcome to Waifu Bot!\nUse /help to see commands', 15)")
-    conn.commit(); conn.close()
+    db("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL DEFAULT 0)")
+    db("CREATE TABLE IF NOT EXISTS waifus (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, anime TEXT, rarity INTEGER, price REAL DEFAULT 0, power INTEGER DEFAULT 0, file_id TEXT)")
+    db("CREATE TABLE IF NOT EXISTS harem (user_id INTEGER, waifu_id INTEGER, PRIMARY KEY(user_id, waifu_id))")
+    db("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    db("CREATE TABLE IF NOT EXISTS redeem (code TEXT PRIMARY KEY, amount REAL, used INTEGER DEFAULT 0)")
 
-def get_rarity_name(r):
-    return {1:"🌟 God",2:"✨ Mythic",3:"🔮 Legendary",4:"💎 Epic",5:"🏆 Rare",6:"🎯 Uncommon",7:"📦 Common",8:"📦 Common",9:"📦 Common",10:"📦 Common",11:"📦 Common",12:"📦 Common"}.get(r, "📦 Common")
+def get_setting(key, default=""):
+    res = dbf("SELECT value FROM settings WHERE key=?",(key,))
+    return res[0][0] if res else default
 
-def get_cash(user_id):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT cash FROM users WHERE user_id=?", (user_id,)); r = c.fetchone(); conn.close()
-    return r[0] if r else 0
+# ===== USER COMMANDS =====
+async def start(update: Update, context: CallbackContext):
+    caption = get_setting("welcome", "**WELCOME TO CLUTCH WAIFU BOT**\n\nCollect waifus, build your harem, BATTLE!")
+    pic = get_setting("welcome_pic")
+    keyboard = [[InlineKeyboardButton("Channel", url=CHANNEL_URL), InlineKeyboardButton("Group", url=GROUP_URL)]]
+    if pic:
+        await update.message.reply_photo(pic, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    else:
+        await update.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-def add_cash(user_id, amount):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,)); c.execute("UPDATE users SET cash=cash+? WHERE user_id=?", (amount, user_id)); conn.commit(); conn.close()
+async def helpcmd(update: Update, context: CallbackContext): # NEW
+    text = """**AVAILABLE COMMANDS**
 
-# SPAWN SYSTEM
-def spawn_waifu(update, context):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT * FROM waifus ORDER BY RANDOM() LIMIT 1"); waifu = c.fetchone(); conn.close()
-    if not waifu: return
-    waifu_id, name, anime, rarity, img_url = waifu
-    caption = f"✨ A wild waifu appeared! ✨\n\n**ID:** `{waifu_id}`\n**Name:** {name}\n**Anime:** {anime}\n**Rarity:** {get_rarity_name(rarity)}\n\nType `/clutch {name}` to claim her!"
-    context.bot.send_photo(chat_id=update.effective_chat.id, photo=img_url, caption=caption, parse_mode='Markdown')
+**User Commands:**
+/clutch <name> - Claim free waifu
+/hunt <name> - Buy paid waifu
+/harem - View your collection
+/bcards - View battle cards
+/search <id> - Search waifu by ID
+/balance - Check balance
+/addbal - Add balance
+/redeem <code> - Redeem code
+/battle - Start battle
+/pick <id> - Choose card in battle
 
-def handle_message(update: Update, context: CallbackContext):
-    if update.effective_chat.type not in ["group", "supergroup"]: return
-    chat_id = update.effective_chat.id
-    if chat_id not in MSG_COUNT: MSG_COUNT[chat_id] = 0
-    MSG_COUNT[chat_id] += 1
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT spawn_time FROM config WHERE id=1"); res = c.fetchone(); spawn_time = res[0] if res else 15; conn.close()
-    if MSG_COUNT[chat_id] >= spawn_time:
-        MSG_COUNT[chat_id] = 0
-        spawn_waifu(update, context)
+**Admin Commands:**
+/upload <name> <anime> <rarity> [price] [power]
+/rwaifu <id> - Remove waifu
+/setqr - Set QR photo
+/setcaption <text>
+/setpic - Set welcome pic
+/created <amount> <code>
+/stime <messages>
+/broadcast - Reply to message"""
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-# ========= USER COMMANDS =========
-def start(update: Update, context: CallbackContext):
-    keyboard = [[InlineKeyboardButton("📢 Group", url=GROUP_LINK), InlineKeyboardButton("👑 Owner", url=OWNER_LINK)]]
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT caption, photo_file_id, video_file_id FROM config WHERE id=1"); res = c.fetchone(); conn.close()
-    caption = res[0] if res and res[0] else "Welcome to Waifu Bot!"
-    photo, video = res[1], res[2]
-    if video: update.message.reply_video(video=video, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
-    elif photo: update.message.reply_photo(photo=photo, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
-    else: update.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard))
+async def clutch(update: Update, context: CallbackContext):
+    if update.effective_chat.type == 'private': return await update.message.reply_text("Error: Use this command only in group")
+    if not context.args: return await update.message.reply_text("Usage: `/clutch waifu-name`", parse_mode='Markdown')
+    name = " ".join(context.args).lower()
+    res = dbf("SELECT id, price FROM waifus WHERE LOWER(name)=?",(name,))
+    if not res: return await update.message.reply_text("Error: Wrong name!")
+    wid, price = res[0]
+    if price > 0: return await update.message.reply_text("Error: This is paid waifu. Use /hunt")
+    uid = update.effective_user.id
+    db("INSERT OR IGNORE INTO users VALUES (?,0)",(uid,))
+    if dbf("SELECT * FROM harem WHERE user_id=? AND waifu_id=?",(uid, wid)): return await update.message.reply_text("Already owned!")
+    db("INSERT INTO harem VALUES (?,?)",(uid, wid))
+    await update.message.reply_text(f"Success: You claimed `{name}`!", parse_mode='Markdown')
 
-def help_cmd(update: Update, context: CallbackContext):
-    text = """**USER COMMANDS**
-`/gallery` - View your harem
-`/clutch <name>` - Claim spawned waifu
-`/shop` - Buy waifus
-`/search <name>` - Search waifu by name
-`/check <id>` - Check waifu by ID
-`/cash` - Check balance
-`/redeem <code>` - Use redeem code
-`/addbal` - Add balance QR
-`/verification <amount> <utr>` - Verify payment
-`/phone` - Open waifu phone
+async def hunt(update: Update, context: CallbackContext):
+    if update.effective_chat.type == 'private': return await update.message.reply_text("Error: Use in group")
+    if not context.args: return await update.message.reply_text("Usage: `/hunt waifu-name`", parse_mode='Markdown')
+    name = " ".join(context.args).lower()
+    res = dbf("SELECT id, price FROM waifus WHERE LOWER(name)=?",(name,))
+    if not res: return await update.message.reply_text("Error: Wrong name!")
+    wid, price = res[0]
+    if price == 0: return await update.message.reply_text("Error: Free waifu. Use /clutch")
+    uid = update.effective_user.id
+    db("INSERT OR IGNORE INTO users VALUES (?,0)",(uid,))
+    bal = dbf("SELECT balance FROM users WHERE user_id=?",(uid,)); bal = bal[0][0] if bal else 0
+    if bal < price: return await update.message.reply_text(f"Error: Need `{price}₹`. Balance: `{bal}₹`", parse_mode='Markdown')
+    if dbf("SELECT * FROM harem WHERE user_id=? AND waifu_id=?",(uid, wid)): return await update.message.reply_text("Already owned!")
+    db("UPDATE users SET balance = balance -? WHERE user_id=?",(price, uid))
+    db("INSERT INTO harem VALUES (?,?)",(uid, wid))
+    await update.message.reply_text(f"Purchased: `{name}` for `{price}₹`!", parse_mode='Markdown')
 
-**ADMIN COMMANDS**
-`/upload <name> <anime> <rarity>` - Add waifu
-`/rup <id>` - Remove waifu
-`/adds <id> <price> <qty>` - Add to shop
-`/rsp <id>` - Remove from shop
-`/createdcode <amount> <code>` - Create code
-`/broadcast` - Reply and broadcast
-`/setvid` - Set welcome video
-`/setphoto` - Set welcome photo
-`/setcaption` - Set welcome text
-`/refresh` - Delete welcome media
-`/stime <num>` - Set spawn time"""
-    update.message.reply_text(text, parse_mode='Markdown')
+async def harem(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    res = dbf("SELECT w.id, w.name, w.anime, w.rarity, w.file_id FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=?",(uid,))
+    if not res: return await update.message.reply_text("Your harem is empty")
+    media = [InputMediaPhoto(r[4], caption=f"ID: {r[0]}\nName: {r[1]}\nAnime: {r[2]}\nRarity: {RARITY_MAP.get(r[3])}") for r in res[:10]]
+    await update.message.reply_media_group(media)
+    await update.message.reply_text(f"**YOUR HAREM**\nTotal: `{len(res)}`", parse_mode='Markdown')
 
-def gallery(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT w.id, w.name, w.anime FROM user_waifus uw JOIN waifus w ON uw.waifu_id=w.id WHERE uw.user_id=?", (user_id,)); res = c.fetchall(); conn.close()
-    if not res: update.message.reply_text("Your harem is empty."); return
-    text = "**Your Harem:**\n" + "\n".join([f"ID: `{r[0]}` | {r[1]} | {r[2]}" for r in res])
-    update.message.reply_text(text, parse_mode='Markdown')
+async def bcards(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    res = dbf("SELECT w.id, w.name, w.anime, w.power, w.file_id FROM harem h JOIN waifus w ON h.waifu_id=w.id WHERE h.user_id=? AND w.rarity=12",(uid,))
+    if not res: return await update.message.reply_text("No Battle Cards found. Collect 💀 Battle rarity waifus")
+    media = [InputMediaPhoto(r[4], caption=f"ID: {r[0]}\nName: {r[1]}\nAnime: {r[2]}\nPower: {r[3]}") for r in res[:10]]
+    await update.message.reply_media_group(media)
+    await update.message.reply_text(f"**YOUR BATTLE CARDS**\nTotal: `{len(res)}`", parse_mode='Markdown')
 
-def clutch(update: Update, context: CallbackContext):
-    if not context.args: update.message.reply_text("Use: /clutch <name>"); return
-    name = " ".join(context.args)
-    user_id = update.effective_user.id
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT * FROM waifus WHERE name LIKE?", (f"%{name}%",)); waifu = c.fetchone()
-    if not waifu: update.message.reply_text("Waifu not found."); conn.close(); return
-    waifu_id, w_name, _, rarity, _ = waifu
-    cost = 49 if rarity <= 4 else 0
-    if get_cash(user_id) < cost: update.message.reply_text(f"You need {cost} cash."); conn.close(); return
-    add_cash(user_id, -cost)
-    c.execute("INSERT INTO user_waifus (user_id, waifu_id) VALUES (?,?)", (user_id, waifu_id))
-    conn.commit(); conn.close()
-    update.message.reply_text(f"🎉 You claimed {w_name}!")
+async def search(update: Update, context: CallbackContext):
+    if not context.args: return await update.message.reply_text("Usage: `/search waifu-id`")
+    wid = int(context.args[0])
+    res = dbf("SELECT * FROM waifus WHERE id=?",(wid,))
+    if not res: return await update.message.reply_text("Error: Waifu not found")
+    w = res[0]
+    await update.message.reply_photo(w[6], caption=f"ID: {w[0]}\nName: {w[1]}\nAnime: {w[2]}\nRarity: {RARITY_MAP.get(w[3])}\nPower: {w[5]}\nPrice: {w[4]}₹", parse_mode='Markdown')
 
-def shop(update: Update, context: CallbackContext):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT s.id, w.name, s.price, s.qty FROM shop s JOIN waifus w ON s.waifu_id=w.id WHERE s.qty>0"); res = c.fetchall(); conn.close()
-    if not res: update.message.reply_text("Shop is empty"); return
-    text = "**SHOP**\n\n" + "\n".join([f"ID: `{r[0]}` | {r[1]} | Price: {r[2]} | Qty: {r[3]}" for r in res])
-    update.message.reply_text(text, parse_mode='Markdown')
+async def balance(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    db("INSERT OR IGNORE INTO users VALUES (?,0)",(uid,))
+    bal = dbf("SELECT balance FROM users WHERE user_id=?",(uid,)); bal = bal[0][0] if bal else 0
+    await update.message.reply_text(f"**YOUR BALANCE**\n`{bal}₹`", parse_mode='Markdown')
 
-def search(update: Update, context: CallbackContext):
-    if not context.args: update.message.reply_text("Use: /search <name>"); return
-    name = "%" + " ".join(context.args) + "%"
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT id, name, anime, rarity FROM waifus WHERE name LIKE? LIMIT 10", (name,)); res = c.fetchall(); conn.close()
-    if not res: update.message.reply_text("No waifu found"); return
-    text = "**Search Results:**\n\n" + "\n".join([f"**ID:** `{r[0]}` | **{r[1]}** | {r[2]} | {get_rarity_name(r[3])}" for r in res])
-    update.message.reply_text(text, parse_mode='Markdown')
+async def addbal(update: Update, context: CallbackContext):
+    qr = get_setting("qr")
+    if not qr: return await update.message.reply_text("Error: Admin has not set QR")
+    keyboard = [[InlineKeyboardButton("SEND PROOF", url="https://t.me/OwnerSween")]]
+    await update.message.reply_photo(qr, caption="PAY HERE & SEND SCREENSHOT TO ADMIN @OwnerSween", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def check(update: Update, context: CallbackContext):
-    if not context.args: update.message.reply_text("Use: /check <waifu_id>"); return
-    try: waifu_id = int(context.args[0])
-    except: update.message.reply_text("ID must be a number"); return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT * FROM waifus WHERE id=?", (waifu_id,)); waifu = c.fetchone(); conn.close()
-    if not waifu: update.message.reply_text(f"No waifu found with ID: {waifu_id}"); return
-    _, name, anime, rarity, img_url = waifu
-    caption = f"**WAIFU INFO**\n\n**ID:** `{waifu_id}`\n**Name:** {name}\n**Anime:** {anime}\n**Rarity:** {get_rarity_name(rarity)}"
-    context.bot.send_photo(chat_id=update.effective_chat.id, photo=img_url, caption=caption, parse_mode='Markdown')
-
-def cash(update: Update, context: CallbackContext):
-    update.message.reply_text(f"Your balance: {get_cash(update.effective_user.id)} Cash")
-
-def redeem(update: Update, context: CallbackContext):
-    if not context.args: update.message.reply_text("Use: /redeem <code>"); return
+async def redeem(update: Update, context: CallbackContext):
+    if not context.args: return await update.message.reply_text("Usage: `/redeem CODE`")
     code = context.args[0]
-    user_id = str(update.effective_user.id)
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT * FROM codes WHERE code=?", (code,)); res = c.fetchone()
-    if not res: update.message.reply_text("Invalid code"); conn.close(); return
-    if user_id in res[2].split(','): update.message.reply_text("Already used"); conn.close(); return
-    add_cash(update.effective_user.id, res[1])
-    new_used = res[2] + ',' + user_id if res[2] else user_id
-    c.execute("UPDATE codes SET used_by=? WHERE code=?", (new_used, code))
-    conn.commit(); conn.close()
-    update.message.reply_text(f"Redeemed {res[1]} Cash!")
+    res = dbf("SELECT amount, used FROM redeem WHERE code=?",(code,))
+    if not res or res[0][1]: return await update.message.reply_text("Error: Invalid or Used Code")
+    amount = res[0][0]
+    db("UPDATE redeem SET used=1 WHERE code=?",(code,))
+    uid = update.effective_user.id
+    db("INSERT OR IGNORE INTO users VALUES (?,0)",(uid,))
+    db("UPDATE users SET balance = balance +? WHERE user_id=?",(amount, uid))
+    await update.message.reply_text(f"Success: Redeemed. +{amount}₹ Added to balance")
 
-def addbal(update: Update, context: CallbackContext):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT qr_file_id FROM config WHERE id=1"); res = c.fetchone(); conn.close()
-    if res and res[0]: update.message.reply_photo(photo=res[0], caption="Scan to add balance")
-    else: update.message.reply_text("QR not set by admin")
+# ===== BATTLE SYSTEM =====
+async def battle(update: Update, context: CallbackContext):
+    if update.effective_chat.type!= 'group': return await update.message.reply_text("Error: Battle only in group")
+    chat_id = update.effective_chat.id
+    if chat_id in active_battles: return await update.message.reply_text("Error: Battle already running")
+    keyboard = [[InlineKeyboardButton("⚔️ COME TO FIGHT", callback_data=f"joinbattle_{update.effective_user.id}")]]
+    active_battles[chat_id] = {"p1": update.effective_user, "p2": None, "round": 0, "score": {update.effective_user.id: 0}, "cards": {}}
+    await update.message.reply_text(f"**⚔️ BATTLE ARENA OPENED ⚔️**\n\n{update.effective_user.first_name} initiated a battle.\nFormat: 7 Rounds\nRule: Choose Battle Card each round. Highest Power wins the round.", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def verification(update: Update, context: CallbackContext):
-    if len(context.args) < 2: update.message.reply_text("Use: /verification <amount> <utr>"); return
-    text = f"New Payment\nUser: {update.effective_user.id}\nAmount: {context.args[0]}\nUTR: {context.args[1]}"
-    context.bot.send_message(chat_id=ADMIN_ID, text=text)
-    update.message.reply_text("Payment sent for verification")
+async def joinbattle(update: Update, context: CallbackContext):
+    q = update.callback_query; await q.answer()
+    chat_id = q.message.chat.id
+    if chat_id not in active_battles: return
+    battle = active_battles[chat_id]
+    if battle["p2"]: return await q.answer("Battle Full", show_alert=True)
+    if q.from_user.id == battle["p1"].id: return await q.answer("You are Player 1", show_alert=True)
+    battle["p2"] = q.from_user; battle["score"][q.from_user.id] = 0
+    await q.message.edit_text("**ARENA IS FULL. BATTLE STARTING NOW.**\n\nRound 1/7\nBoth players use /pick <waifu_id> to select card")
+    await asyncio.sleep(3); await start_round(chat_id, context)
 
-def phone(update: Update, context: CallbackContext):
-    keyboard = [[InlineKeyboardButton("📸 Instagram", url="https://instagram.com"), InlineKeyboardButton("📘 FB", url="https://facebook.com")], [InlineKeyboardButton("📞 Call", url="tel:123")]]
-    update.message.reply_text("Waifu Phone", reply_markup=InlineKeyboardMarkup(keyboard))
+async def pick(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+    if chat_id not in active_battles: return
+    battle = active_battles[chat_id]; uid = update.effective_user.id
+    if uid not in [battle["p1"].id, battle.get("p2", {}).id]: return
+    if not context.args: return await update.message.reply_text("Usage: `/pick waifu_id`")
+    wid = int(context.args[0])
+    res = dbf("SELECT power FROM waifus w JOIN harem h ON w.id=h.waifu_id WHERE w.id=? AND h.user_id=? AND w.rarity=12",(wid, uid))
+    if not res: return await update.message.reply_text("Error: You do not own this Battle Card")
+    battle["cards"][uid] = res[0][0]
+    await update.message.reply_text(f"Card Locked. Power: `{res[0][0]}`", parse_mode='Markdown')
 
-# ========= ADMIN COMMANDS =========
-def upload(update: Update, context: CallbackContext):
+async def start_round(chat_id, context):
+    battle = active_battles[chat_id]; battle["round"] += 1; battle["cards"] = {}
+    await context.bot.send_message(chat_id, f"**ROUND {battle['round']}/7**\nSelect your Battle Card.\nCommand: `/pick <id>`\nTime Limit: 20 seconds")
+    await asyncio.sleep(20); await end_round(chat_id, context)
+
+async def end_round(chat_id, context):
+    battle = active_battles[chat_id]; p1, p2 = battle["p1"].id, battle["p2"].id
+    p1_power = battle["cards"].get(p1, 0); p2_power = battle["cards"].get(p2, 0)
+    if p1_power > p2_power: battle["score"][p1] += 1; winner = battle["p1"].first_name
+    elif p2_power > p1_power: battle["score"][p2] += 1; winner = battle["p2"].first_name
+    else: winner = "DRAW"
+    await context.bot.send_message(chat_id, f"**ROUND {battle['round']} RESULT**\n\n{battle['p1'].first_name}: {p1_power} Power\n{battle['p2'].first_name}: {p2_power} Power\nWinner: {winner}\n\n**SCORE:** {battle['p1'].first_name} {battle['score'][p1]} - {battle['score'][p2]} {battle['p2'].first_name}")
+    if battle["round"] >= 7:
+        if battle["score"][p1] > battle["score"][p2]: final = f"WINNER: {battle['p1'].first_name}"
+        elif battle["score"][p2] > battle["score"][p1]: final = f"WINNER: {battle['p2'].first_name}"
+        else: final = "RESULT: DRAW"
+        await context.bot.send_message(chat_id, f"**BATTLE OVER**\n\n{final}"); del active_battles[chat_id]
+    else: await asyncio.sleep(3); await start_round(chat_id, context)
+
+# ===== ADMIN COMMANDS =====
+async def setqr(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
-    if len(context.args) < 3: update.message.reply_text("Use: /upload <name> <anime> <rarity>"); return
-    name, anime, rarity = context.args[0], context.args[1], context.args[2]
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT INTO waifus (name, anime, rarity, img_url) VALUES (?,?,?,?)", (name, anime, rarity, "https://via.placeholder.com/500")); conn.commit(); conn.close()
-    update.message.reply_text(f"Added {name}")
-
-def rup(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or not context.args: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("DELETE FROM waifus WHERE id=?", (context.args[0],)); conn.commit(); conn.close()
-    update.message.reply_text("Waifu removed")
-
-def adds(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or len(context.args)<3: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT OR REPLACE INTO shop (id, waifu_id, price, qty) VALUES (?,?,?,?)", (context.args[0], context.args[0], context.args[1], context.args[2])); conn.commit(); conn.close()
-    update.message.reply_text("Added to shop")
-
-def rsp(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or not context.args: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("DELETE FROM shop WHERE id=?", (context.args[0],)); conn.commit(); conn.close()
-    update.message.reply_text("Removed from shop")
-
-def createdcode(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or len(context.args)<2: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT OR REPLACE INTO codes (code, amount, used_by) VALUES (?,?,?)", (context.args[1], context.args[0], "")); conn.commit(); conn.close()
-    update.message.reply_text(f"Code {context.args[1]} created for {context.args[0]} cash")
-
-def broadcast(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or not update.message.reply_to_message: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT user_id FROM users"); users = c.fetchall(); conn.close()
-    for u in users:
-        try: context.bot.copy_message(chat_id=u[0], from_chat_id=update.effective_chat.id, message_id=update.message.reply_to_message.message_id)
-        except: pass
-    update.message.reply_text("Broadcast sent")
-
-def stime(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID or not context.args: return
-    t = int(context.args[0])
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE config SET spawn_time=? WHERE id=1", (t,)); conn.commit(); conn.close()
-    update.message.reply_text(f"Spawn time set to {t} messages")
-
-def setvid(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID: return
-    if not update.message.reply_to_message or not update.message.reply_to_message.video: update.message.reply_text("Reply to a video with /setvid"); return
-    file_id = update.message.reply_to_message.video.file_id
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE config SET video_file_id=?, photo_file_id=NULL WHERE id=1", (file_id,)); conn.commit(); conn.close()
-    update.message.reply_text("✅ Welcome video set!")
-
-def setphoto(update: Update, context: CallbackContext):
-    if update.effective_user.id!= ADMIN_ID: return
-    if not update.message.reply_to_message or not update.message.reply_to_message.photo: update.message.reply_text("Reply to a photo with /setphoto"); return
     file_id = update.message.reply_to_message.photo[-1].file_id
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE config SET photo_file_id=?, video_file_id=NULL WHERE id=1", (file_id,)); conn.commit(); conn.close()
-    update.message.reply_text("✅ Welcome photo set!")
+    db("INSERT OR REPLACE INTO settings VALUES ('qr',?)",(file_id,)); await update.message.reply_text("QR Set Successfully")
 
-def setcaption(update: Update, context: CallbackContext):
+async def upload(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
-    if not update.message.reply_to_message or not update.message.reply_to_message.text: update.message.reply_text("Reply to text with /setcaption"); return
-    caption = update.message.reply_to_message.text
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE config SET caption=? WHERE id=1", (caption,)); conn.commit(); conn.close()
-    update.message.reply_text("✅ Welcome caption updated!")
+    if not update.message.reply_to_message.photo: return await update.message.reply_text("Error: Reply to a photo")
+    args = context.args
+    if len(args) < 3: return await update.message.reply_text("Usage: `/upload name anime rarity [price] [power]`", parse_mode='Markdown')
+    name, anime, rarity = args[0], args[1], int(args[2])
+    price = float(args[3]) if len(args) > 3 else 0
+    power = int(args[4]) if len(args) > 4 else 0
+    file_id = update.message.reply_to_message.photo[-1].file_id
+    db("INSERT INTO waifus (name, anime, rarity, price, power, file_id) VALUES (?,?,?,?,?,?)",(name, anime, rarity, price, power, file_id))
+    await update.message.reply_text(f"Uploaded Successfully\nName: {name}\nRarity: {RARITY_MAP.get(rarity)}\nPower: {power}\nPrice: {price}₹", parse_mode='Markdown')
 
-def refresh(update: Update, context: CallbackContext):
+async def rwaifu(update: Update, context: CallbackContext):
     if update.effective_user.id!= ADMIN_ID: return
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE config SET photo_file_id=NULL, video_file_id=NULL WHERE id=1"); conn.commit(); conn.close()
-    update.message.reply_text("✅ Welcome media deleted")
+    db("DELETE FROM waifus WHERE id=?",(int(context.args[0]),)); await update.message.reply_text("Waifu Removed")
 
-def main():
+async def setcaption(update: Update, context: CallbackContext):
+    if update.effective_user.id!= ADMIN_ID: return
+    db("INSERT OR REPLACE INTO settings VALUES ('welcome',?)",(" ".join(context.args),)); await update.message.reply_text("Welcome caption updated")
+
+async def setpic(update: Update, context: CallbackContext):
+    if update.effective_user.id!= ADMIN_ID: return
+    file_id = update.message.reply_to_message.photo[-1].file_id
+    db("INSERT OR REPLACE INTO settings VALUES ('welcome_pic',?)",(file_id,)); await update.message.reply_text("Welcome picture updated")
+
+async def created(update: Update, context: CallbackContext):
+    if update.effective_user.id!= ADMIN_ID: return
+    db("INSERT OR REPLACE INTO redeem VALUES (?,?,0)",(context.args[1], float(context.args[0]))); await update.message.reply_text(f"Redeem Code Created: {context.args[1]} = {context.args[0]}₹")
+
+async def stime(update: Update, context: CallbackContext):
+    if update.effective_user.id!= ADMIN_ID: return
+    db("INSERT OR REPLACE INTO settings VALUES ('stime',?)",(context.args[0],)); await update.message.reply_text(f"Spawn time set to {context.args[0]} messages")
+
+async def broadcast(update: Update, context: CallbackContext):
+    if update.effective_user.id!= ADMIN_ID: return
+    msg = update.message.reply_to_message
+    users = dbf("SELECT user_id FROM users")
+    count = 0
+    for u in users:
+        try:
+            if msg.photo: await context.bot.send_photo(u[0], msg.photo[-1].file_id, caption=msg.caption)
+            else: await context.bot.send_message(u[0], msg.text)
+            count += 1
+        except: pass
+    await update.message.reply_text(f"Broadcast Completed. Sent to {count} users")
+
+# ===== AUTO SPAWN =====
+async def message_counter(update: Update, context: CallbackContext):
+    if update.effective_chat.type!= 'group' or update.effective_user.id == ADMIN_ID: return
+    count = int(get_setting("msg_count", "0")) + 1
+    stime = int(get_setting("stime", "15"))
+    db("INSERT OR REPLACE INTO settings VALUES ('msg_count',?)",(str(count),))
+    if count >= stime:
+        db("INSERT OR REPLACE INTO settings VALUES ('msg_count','0')")
+        waifus = dbf("SELECT * FROM waifus WHERE rarity IN ({})".format(','.join('?'*len(DROP_RARITY))), DROP_RARITY)
+        if waifus:
+            weights = {4:1,5:2,6:3,7:4,8:5,9:8,10:12,11:20,12:10}
+            w = random.choices(waifus, weights=[weights.get(x[3], 1) for x in waifus])[0]
+            rarity_text, price = RARITY_MAP.get(w[3]), w[4]
+            if price > 0:
+                caption = f"A New {rarity_text} {int(price)}₹ SealWaifu Appeared.\n/Clutch Character Name to add to your Collection"
+                switch_query = "/Clutch "
+            else:
+                caption = f'A New "{rarity_text}" SealWaifu Appeared.\n/Clutch Character Name to add to your Collection'
+                switch_query = "/Clutch "
+            keyboard = [[InlineKeyboardButton("CLUTCH", switch_inline_query_current_chat=switch_query)]]
+            await context.bot.send_photo(update.effective_chat.id, w[6], caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def main():
+    if not TOKEN or not ADMIN_ID:
+        print("BOT_TOKEN or ADMIN_ID missing in env")
+        return
     init_db()
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_handler(CommandHandler("start", start)); dp.add_handler(CommandHandler("help", help_cmd)); dp.add_handler(CommandHandler("gallery", gallery))
-    dp.add_handler(CommandHandler("clutch", clutch)); dp.add_handler(CommandHandler("shop", shop)); dp.add_handler(CommandHandler("search", search))
-    dp.add_handler(CommandHandler("check", check)); dp.add_handler(CommandHandler("cash", cash)); dp.add_handler(CommandHandler("redeem", redeem))
-    dp.add_handler(CommandHandler("addbal", addbal)); dp.add_handler(CommandHandler("verification", verification)); dp.add_handler(CommandHandler("phone", phone))
-    dp.add_handler(CommandHandler("upload", upload)); dp.add_handler(CommandHandler("rup", rup)); dp.add_handler(CommandHandler("adds", adds))
-    dp.add_handler(CommandHandler("rsp", rsp)); dp.add_handler(CommandHandler("createdcode", createdcode)); dp.add_handler(CommandHandler("broadcast", broadcast))
-    dp.add_handler(CommandHandler("stime", stime)); dp.add_handler(CommandHandler("setvid", setvid)); dp.add_handler(CommandHandler("setphoto", setphoto))
-    dp.add_handler(CommandHandler("setcaption", setcaption)); dp.add_handler(CommandHandler("refresh", refresh))
-    updater.start_polling(); updater.idle()
+    app = Application.builder().token(TOKEN).build()
 
-if __name__ == '__main__':
-    main()
+    # USER COMMANDS
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", helpcmd))
+    app.add_handler(CommandHandler("clutch", clutch))
+    app.add_handler(CommandHandler("hunt", hunt))
+    app.add_handler(CommandHandler("harem", harem))
+    app.add_handler(CommandHandler("bcards", bcards))
+    app.add_handler(CommandHandler("search", search))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("addbal", addbal))
+    app.add_handler(CommandHandler("redeem", redeem))
+    app.add_handler(CommandHandler("battle", battle))
+    app.add_handler(CommandHandler("pick", pick))
+
+    # ADMIN COMMANDS
+    app.add_handler(CommandHandler("setqr", setqr))
+    app.add_handler(CommandHandler("upload", upload))
+    app.add_handler(CommandHandler("rwaifu", rwaifu))
+    app.add_handler(CommandHandler("setcaption", setcaption))
+    app.add_handler(CommandHandler("setpic", setpic))
+    app.add_handler(CommandHandler("created", created))
+    app.add_handler(CommandHandler("stime", stime))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+
+    # SYSTEM
+    app.add_handler(MessageHandler(filters.ALL, message_counter))
+    app.add_handler(CallbackQueryHandler(joinbattle, pattern="joinbattle"))
+
+    print("CLUTCH WAIFU BOT RUNNING")
+    await app.run_polling()
+
+if __name__=='__main__':
+    asyncio.run(main())
